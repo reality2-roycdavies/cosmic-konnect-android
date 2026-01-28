@@ -69,7 +69,8 @@ interface DiscoveryCallback {
  */
 class UnifiedDiscoveryManager(
     private val context: Context,
-    private val callback: DiscoveryCallback
+    private val callback: DiscoveryCallback,
+    private val tcpPort: Int = NetworkPacket.DEFAULT_TCP_PORT
 ) {
     private val TAG = "UnifiedDiscovery"
 
@@ -140,20 +141,20 @@ class UnifiedDiscoveryManager(
     }
 
     private fun initializeBle() {
-        val identity = DeviceIdentity.getIdentity(context)
+        val identity = DeviceIdentity.getIdentity(context, tcpPort)
 
-        // Create BLE advertiser
-        bleAdvertiser = BleAdvertiser(context) { deviceId, deviceName, ipAddress ->
+        // Create BLE advertiser with the configured TCP port
+        bleAdvertiser = BleAdvertiser(context, tcpPort) { deviceId, deviceName, ipAddress ->
             Log.i(TAG, "BLE connection request from $deviceName")
             val device = DiscoveredDevice(
                 deviceId = deviceId,
                 deviceName = deviceName,
                 deviceType = "unknown",
                 ipAddresses = listOf(ipAddress),
-                tcpPort = NetworkPacket.DEFAULT_TCP_PORT,
+                tcpPort = tcpPort,
                 discoveryMethod = DiscoveryMethod.BLE
             )
-            callback.onConnectionAvailable(device, ipAddress, NetworkPacket.DEFAULT_TCP_PORT)
+            callback.onConnectionAvailable(device, ipAddress, tcpPort)
         }
 
         // Create BLE scanner

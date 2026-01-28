@@ -20,9 +20,21 @@ data class DeviceIdentity(
 ) {
     companion object {
         private var cachedIdentity: DeviceIdentity? = null
+        private var cachedPort: Int = NetworkPacket.DEFAULT_TCP_PORT
 
         fun getIdentity(context: Context): DeviceIdentity {
-            cachedIdentity?.let { return it }
+            return getIdentity(context, cachedPort)
+        }
+
+        /**
+         * Get identity with a specific TCP port.
+         * Use this for CKP mode (port 17161) vs legacy mode (port 1716).
+         */
+        fun getIdentity(context: Context, tcpPort: Int): DeviceIdentity {
+            // Return cached if port matches
+            if (cachedIdentity != null && cachedPort == tcpPort) {
+                return cachedIdentity!!
+            }
 
             val deviceId = getDeviceId(context)
             val deviceName = getDeviceName()
@@ -44,10 +56,12 @@ data class DeviceIdentity(
                 deviceId = deviceId,
                 deviceName = deviceName,
                 incomingCapabilities = capabilities,
-                outgoingCapabilities = capabilities
+                outgoingCapabilities = capabilities,
+                tcpPort = tcpPort
             )
 
             cachedIdentity = identity
+            cachedPort = tcpPort
             return identity
         }
 

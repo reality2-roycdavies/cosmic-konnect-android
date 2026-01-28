@@ -12,6 +12,7 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import io.github.cosmickonnect.protocol.NetworkPacket
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -37,7 +39,11 @@ data class BleDiscoveredDevice(
     val tcpPort: Int,
     val protocolVersion: Int,
     val rssi: Int,
-    val lastSeen: Long = System.currentTimeMillis()
+    val lastSeen: Long = System.currentTimeMillis(),
+    /** WiFi hotspot SSID if available (for direct connection fallback) */
+    val hotspotSsid: String? = null,
+    /** WiFi hotspot password if available */
+    val hotspotPassword: String? = null
 )
 
 /**
@@ -229,6 +235,11 @@ class BleScanner(
         }
     }
 
+    companion object {
+        /** Timeout for GATT operations in milliseconds */
+        private const val GATT_TIMEOUT_MS = 10_000L
+    }
+
     private fun connectAndReadInfo(device: BluetoothDevice, rssi: Int) {
         try {
             val gatt = device.connectGatt(context, false, object : BluetoothGattCallback() {
@@ -238,7 +249,28 @@ class BleScanner(
                 private var ipAddresses: String? = null
                 private var tcpPort: String? = null
                 private var protocolVersion: String? = null
+                private var hotspotSsid: String? = null
+                private var hotspotPassword: String? = null
                 private var characteristicsToRead = mutableListOf<BluetoothGattCharacteristic>()
+                private var isCompleted = false
+
+                // Timeout handler for the entire GATT operation
+                private val timeoutRunnable = Runnable {
+                    if (!isCompleted) {
+                        Log.w(TAG, "GATT operation timed out for ${device.address}")
+                        isCompleted = true
+                        disconnectAndCleanup(pendingConnections[device.address])
+                    }
+                }
+
+                init {
+                    // Schedule timeout
+                    handler.postDelayed(timeoutRunnable, GATT_TIMEOUT_MS)
+                }
+
+                private fun cancelTimeout() {
+                    handler.removeCallbacks(timeoutRunnable)
+                }
 
                 override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
                     try {
@@ -247,6 +279,7 @@ class BleScanner(
                             gatt?.discoverServices()
                         } else if (newState == BluetoothGatt.STATE_DISCONNECTED) {
                             Log.d(TAG, "Disconnected from ${device.address}")
+                            cancelTimeout()
                             pendingConnections.remove(device.address)
                             gatt?.close()
                         }
@@ -278,6 +311,9 @@ class BleScanner(
                         service.getCharacteristic(BleConstants.CHAR_IP_ADDRESS)?.let { characteristicsToRead.add(it) }
                         service.getCharacteristic(BleConstants.CHAR_TCP_PORT)?.let { characteristicsToRead.add(it) }
                         service.getCharacteristic(BleConstants.CHAR_PROTOCOL_VERSION)?.let { characteristicsToRead.add(it) }
+                        // Hotspot credentials for WiFi fallback
+                        service.getCharacteristic(BleConstants.CHAR_HOTSPOT_SSID)?.let { characteristicsToRead.add(it) }
+                        service.getCharacteristic(BleConstants.CHAR_HOTSPOT_PASSWORD)?.let { characteristicsToRead.add(it) }
 
                         // Start reading
                         readNextCharacteristic(gatt)
@@ -303,32 +339,68 @@ class BleScanner(
                     }
                 }
 
+                /**
+                 * Process a characteristic value after reading.
+                 * Shared by both API < 33 and API 33+ callbacks.
+                 */
+                private fun processCharacteristicValue(uuid: UUID, value: String, gatt: BluetoothGatt?) {
+                    when (uuid) {
+                        BleConstants.CHAR_DEVICE_ID -> deviceId = value
+                        BleConstants.CHAR_DEVICE_NAME -> deviceName = value
+                        BleConstants.CHAR_DEVICE_TYPE -> deviceType = value
+                        BleConstants.CHAR_IP_ADDRESS -> ipAddresses = value
+                        BleConstants.CHAR_TCP_PORT -> tcpPort = value
+                        BleConstants.CHAR_PROTOCOL_VERSION -> protocolVersion = value
+                        BleConstants.CHAR_HOTSPOT_SSID -> hotspotSsid = value.takeIf { it.isNotEmpty() }
+                        BleConstants.CHAR_HOTSPOT_PASSWORD -> hotspotPassword = value.takeIf { it.isNotEmpty() }
+                    }
+
+                    Log.d(TAG, "Read $uuid: $value")
+
+                    // Read next characteristic
+                    readNextCharacteristic(gatt)
+                }
+
+                // Callback for API < 33
                 @Deprecated("Deprecated in API 33")
                 override fun onCharacteristicRead(
                     gatt: BluetoothGatt?,
                     characteristic: BluetoothGattCharacteristic?,
                     status: Int
                 ) {
-                    if (status == BluetoothGatt.GATT_SUCCESS && characteristic != null) {
-                        val value = characteristic.getStringValue(0) ?: ""
-
-                        when (characteristic.uuid) {
-                            BleConstants.CHAR_DEVICE_ID -> deviceId = value
-                            BleConstants.CHAR_DEVICE_NAME -> deviceName = value
-                            BleConstants.CHAR_DEVICE_TYPE -> deviceType = value
-                            BleConstants.CHAR_IP_ADDRESS -> ipAddresses = value
-                            BleConstants.CHAR_TCP_PORT -> tcpPort = value
-                            BleConstants.CHAR_PROTOCOL_VERSION -> protocolVersion = value
+                    // Only process on older API versions
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                        if (status == BluetoothGatt.GATT_SUCCESS && characteristic != null) {
+                            val value = characteristic.getStringValue(0) ?: ""
+                            processCharacteristicValue(characteristic.uuid, value, gatt)
+                        } else {
+                            // Read failed, try next
+                            readNextCharacteristic(gatt)
                         }
-
-                        Log.d(TAG, "Read ${characteristic.uuid}: $value")
                     }
+                }
 
-                    // Read next characteristic
-                    readNextCharacteristic(gatt)
+                // Callback for API 33+ (TIRAMISU)
+                override fun onCharacteristicRead(
+                    gatt: BluetoothGatt,
+                    characteristic: BluetoothGattCharacteristic,
+                    value: ByteArray,
+                    status: Int
+                ) {
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        val stringValue = String(value, Charsets.UTF_8)
+                        processCharacteristicValue(characteristic.uuid, stringValue, gatt)
+                    } else {
+                        // Read failed, try next
+                        readNextCharacteristic(gatt)
+                    }
                 }
 
                 private fun createDiscoveredDevice(gatt: BluetoothGatt?, rssi: Int) {
+                    if (isCompleted) return
+                    isCompleted = true
+                    cancelTimeout()
+
                     if (deviceId != null && deviceName != null) {
                         val bleDevice = BleDiscoveredDevice(
                             bleAddress = device.address,
@@ -338,7 +410,9 @@ class BleScanner(
                             ipAddresses = ipAddresses?.split(",")?.filter { it.isNotEmpty() } ?: emptyList(),
                             tcpPort = tcpPort?.toIntOrNull() ?: NetworkPacket.DEFAULT_TCP_PORT,
                             protocolVersion = protocolVersion?.toIntOrNull() ?: 7,
-                            rssi = rssi
+                            rssi = rssi,
+                            hotspotSsid = hotspotSsid,
+                            hotspotPassword = hotspotPassword
                         )
 
                         discoveredDevices[device.address] = bleDevice
@@ -346,6 +420,9 @@ class BleScanner(
 
                         Log.i(TAG, "Discovered device via BLE: ${bleDevice.deviceName} (${bleDevice.deviceId})")
                         Log.i(TAG, "  IP addresses: ${bleDevice.ipAddresses}")
+                        if (bleDevice.hotspotSsid != null) {
+                            Log.i(TAG, "  Hotspot available: ${bleDevice.hotspotSsid}")
+                        }
 
                         onDeviceDiscovered(bleDevice)
                     }
@@ -354,6 +431,7 @@ class BleScanner(
                 }
 
                 private fun disconnectAndCleanup(gatt: BluetoothGatt?) {
+                    cancelTimeout()
                     try {
                         gatt?.disconnect()
                         gatt?.close()

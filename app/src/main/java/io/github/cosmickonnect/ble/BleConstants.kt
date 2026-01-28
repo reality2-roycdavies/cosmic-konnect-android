@@ -70,6 +70,21 @@ object BleConstants {
     val CHAR_CONNECTION_REQUEST: UUID = UUID.fromString("c05a1c00-a0aa-3c70-0007-000000000001")
 
     /**
+     * Hotspot SSID characteristic - WiFi hotspot name for direct connection.
+     * Properties: Read
+     * Format: UTF-8 string (e.g., "CosmicKonnect")
+     * Empty string means no hotspot available.
+     */
+    val CHAR_HOTSPOT_SSID: UUID = UUID.fromString("c05a1c00-a0aa-3c70-0008-000000000001")
+
+    /**
+     * Hotspot Password characteristic - WiFi hotspot password.
+     * Properties: Read
+     * Format: UTF-8 string
+     */
+    val CHAR_HOTSPOT_PASSWORD: UUID = UUID.fromString("c05a1c00-a0aa-3c70-0009-000000000001")
+
+    /**
      * Client Characteristic Configuration Descriptor UUID.
      * Standard UUID for enabling notifications.
      */

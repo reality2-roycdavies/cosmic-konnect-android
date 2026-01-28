@@ -17,6 +17,9 @@ import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import io.github.cosmickonnect.ble.BleAdvertiser
+import io.github.cosmickonnect.ble.BleScanner
+import io.github.cosmickonnect.protocol.DeviceIdentity
 import java.util.UUID
 
 /**
@@ -42,6 +45,8 @@ class CkpServiceManager(private val context: Context) {
     private lateinit var identity: Identity
     private var discovery: CkpDiscovery? = null
     private var connectionManager: CkpConnectionManager? = null
+    private var bleAdvertiser: BleAdvertiser? = null
+    private var bleScanner: BleScanner? = null
 
     private val _devices = MutableStateFlow<Map<String, CkpDeviceState>>(emptyMap())
     val devices: StateFlow<Map<String, CkpDeviceState>> = _devices
@@ -119,6 +124,9 @@ class CkpServiceManager(private val context: Context) {
             Log.e(TAG, "Failed to start CKP TCP listener")
         }
 
+        // Start BLE advertising with CKP port
+        startBleAdvertising()
+
         _isRunning.value = true
         Log.i(TAG, "CKP service started")
     }
@@ -136,8 +144,57 @@ class CkpServiceManager(private val context: Context) {
         connectionManager?.stopListener()
         connectionManager = null
 
+        // Stop BLE
+        bleAdvertiser?.stopAdvertising()
+        bleScanner?.stopScanning()
+        bleAdvertiser = null
+        bleScanner = null
+
         _isRunning.value = false
         Log.i(TAG, "CKP service stopped")
+    }
+
+    /**
+     * Start BLE advertising so other devices can discover us
+     */
+    private fun startBleAdvertising() {
+        try {
+            // Create BLE advertiser with CKP port (17161)
+            bleAdvertiser = BleAdvertiser(context, Protocol.TCP_PORT) { deviceId, deviceName, ipAddress ->
+                Log.i(TAG, "BLE connection request from $deviceName ($deviceId) at $ipAddress")
+                // Attempt to connect to the requesting device
+                scope.launch {
+                    connectionManager?.connect(deviceId, ipAddress, Protocol.TCP_PORT)
+                }
+            }
+
+            if (bleAdvertiser?.initialize() == true) {
+                if (bleAdvertiser?.startAdvertising() == true) {
+                    Log.i(TAG, "BLE advertising started on CKP port ${Protocol.TCP_PORT}")
+                } else {
+                    Log.w(TAG, "Failed to start BLE advertising")
+                }
+            } else {
+                Log.w(TAG, "BLE advertiser initialization failed")
+            }
+
+            // Also start BLE scanner to discover other devices
+            bleScanner = BleScanner(context) { bleDevice ->
+                Log.i(TAG, "BLE discovered: ${bleDevice.deviceName} (${bleDevice.deviceId})")
+                // Try to connect using the IP from BLE
+                bleDevice.ipAddresses.firstOrNull()?.let { ip ->
+                    scope.launch {
+                        connectionManager?.connect(bleDevice.deviceId, ip, bleDevice.tcpPort)
+                    }
+                }
+            }
+            if (bleScanner?.initialize() == true) {
+                bleScanner?.startScanning()
+                Log.i(TAG, "BLE scanning started")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start BLE: ${e.message}")
+        }
     }
 
     /**

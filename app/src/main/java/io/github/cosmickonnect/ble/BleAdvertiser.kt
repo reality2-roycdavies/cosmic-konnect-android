@@ -30,6 +30,7 @@ import java.net.NetworkInterface
  */
 class BleAdvertiser(
     private val context: Context,
+    private val tcpPort: Int = io.github.cosmickonnect.protocol.NetworkPacket.DEFAULT_TCP_PORT,
     private val onConnectionRequest: (deviceId: String, deviceName: String, ipAddress: String) -> Unit
 ) {
     private val TAG = "BleAdvertiser"
@@ -68,7 +69,7 @@ class BleAdvertiser(
                 return false
             }
 
-            deviceIdentity = DeviceIdentity.getIdentity(context)
+            deviceIdentity = DeviceIdentity.getIdentity(context, tcpPort)
             Log.i(TAG, "BLE Advertiser initialized for ${deviceIdentity.deviceName}")
             return true
         } catch (e: SecurityException) {
@@ -272,7 +273,7 @@ class BleAdvertiser(
                     BleConstants.CHAR_DEVICE_NAME -> deviceIdentity.deviceName
                     BleConstants.CHAR_DEVICE_TYPE -> deviceIdentity.deviceType
                     BleConstants.CHAR_IP_ADDRESS -> getIpAddresses()
-                    BleConstants.CHAR_TCP_PORT -> NetworkPacket.DEFAULT_TCP_PORT.toString()
+                    BleConstants.CHAR_TCP_PORT -> deviceIdentity.tcpPort.toString()
                     BleConstants.CHAR_PROTOCOL_VERSION -> "7"
                     else -> null
                 }
