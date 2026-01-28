@@ -1,5 +1,6 @@
 package io.github.cosmickonnect.ckp
 
+import android.net.Network
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,7 +34,7 @@ open class CkpConnection(
     protected val onMessage: suspend (CkpMessage) -> Unit,
     protected val onDisconnected: () -> Unit
 ) {
-    private val TAG = "CkpConnection"
+    protected val TAG = "CkpConnection"
     protected val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     protected var socket: Socket? = null
@@ -284,7 +285,7 @@ open class CkpConnection(
         }
     }
 
-    private suspend fun readMessage(): Pair<CkpMessage, MessageFlags>? = withContext(Dispatchers.IO) {
+    protected suspend fun readMessage(): Pair<CkpMessage, MessageFlags>? = withContext(Dispatchers.IO) {
         try {
             val input = inputStream ?: return@withContext null
 
@@ -364,6 +365,69 @@ class CkpIncomingConnection(
     // Start reading messages (called by the connection manager after setup)
     fun beginReading() {
         startReading()
+    }
+}
+
+/**
+ * CKP connection using a pre-connected socket (for network-bound connections)
+ */
+class CkpNetworkConnection(
+    socket: Socket,
+    deviceId: String,
+    ourIdentity: Identity,
+    onMessage: suspend (CkpMessage) -> Unit,
+    onDisconnected: () -> Unit
+) : CkpConnection(
+    deviceId = deviceId,
+    address = socket.inetAddress?.hostAddress ?: "",
+    port = socket.port,
+    ourIdentity = ourIdentity,
+    onMessage = onMessage,
+    onDisconnected = onDisconnected
+) {
+    init {
+        // Set the socket and streams directly since we already have a connected socket
+        this.socket = socket
+        inputStream = socket.getInputStream()
+        outputStream = socket.getOutputStream()
+        _state.value = ConnectionState.CONNECTED
+    }
+
+    // Override connect() to just do the handshake since socket is already connected
+    override suspend fun connect(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            Log.i(TAG, "Handshaking with pre-connected socket to $address:$port")
+
+            // Send our identity
+            val sessionNonce = CkpCrypto.generateSessionNonce()
+            val identityMsg = ourIdentity.copy(sessionNonce = sessionNonce)
+            sendMessage(identityMsg)
+
+            // Read peer's identity
+            val (peerMsg, _) = readMessage() ?: run {
+                Log.e(TAG, "Failed to read peer identity")
+                disconnect()
+                return@withContext false
+            }
+
+            if (peerMsg is Identity) {
+                _peerIdentity.value = peerMsg
+                _state.value = ConnectionState.IDENTIFIED
+                Log.i(TAG, "Connected to ${peerMsg.name} (${peerMsg.deviceId})")
+
+                // Start reading messages
+                startReading()
+                return@withContext true
+            } else {
+                Log.e(TAG, "Expected Identity message, got ${peerMsg::class.simpleName}")
+                disconnect()
+                return@withContext false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Handshake failed: ${e.message}")
+            disconnect()
+            return@withContext false
+        }
     }
 }
 
@@ -524,6 +588,42 @@ class CkpConnectionManager(
             deviceId = deviceId,
             address = address,
             port = port,
+            ourIdentity = ourIdentity,
+            onMessage = { msg -> handleMessage(deviceId, msg) },
+            onDisconnected = { handleDisconnected(deviceId) }
+        )
+
+        val success = connection.connect()
+        if (success) {
+            connections[deviceId] = connection
+            onEvent(CkpConnectionEvent.Connected(deviceId, connection.peerIdentity.value?.name ?: ""))
+        }
+        return success
+    }
+
+    /**
+     * Connect to a device using a specific Network (for hotspot connections)
+     */
+    suspend fun connectWithNetwork(deviceId: String, address: String, port: Int, network: Network): Boolean {
+        if (connections.containsKey(deviceId)) {
+            Log.d(TAG, "Already connected to $deviceId")
+            return true
+        }
+
+        // Create socket using the network's socket factory
+        val socket = try {
+            val factory = network.socketFactory
+            val s = factory.createSocket()
+            s.connect(InetSocketAddress(address, port), Protocol.CONNECTION_TIMEOUT_MS.toInt())
+            s
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to connect via network: ${e.message}")
+            return false
+        }
+
+        val connection = CkpNetworkConnection(
+            socket = socket,
+            deviceId = deviceId,
             ourIdentity = ourIdentity,
             onMessage = { msg -> handleMessage(deviceId, msg) },
             onDisconnected = { handleDisconnected(deviceId) }

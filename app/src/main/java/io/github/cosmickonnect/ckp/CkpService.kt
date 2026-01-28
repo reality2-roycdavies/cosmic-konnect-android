@@ -216,7 +216,15 @@ class CkpServiceManager(private val context: Context) {
                     // The hotspot IP is typically 10.42.0.1 for NetworkManager
                     val hotspotIp = "10.42.0.1"
                     Log.i(TAG, "Connecting to device at hotspot IP: $hotspotIp")
-                    connectionManager?.connect(bleDevice.deviceId, hotspotIp, bleDevice.tcpPort)
+
+                    // Use the bound network's socket factory for the connection
+                    val network = boundNetwork.get()
+                    if (network != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        Log.i(TAG, "Using bound network socket factory for connection")
+                        connectionManager?.connectWithNetwork(bleDevice.deviceId, hotspotIp, bleDevice.tcpPort, network)
+                    } else {
+                        connectionManager?.connect(bleDevice.deviceId, hotspotIp, bleDevice.tcpPort)
+                    }
                     return@launch
                 }
             }
@@ -251,6 +259,20 @@ class CkpServiceManager(private val context: Context) {
             val currentSsid = wifiManager.connectionInfo?.ssid?.trim('"')
             if (currentSsid == ssid) {
                 Log.i(TAG, "Already connected to hotspot $ssid")
+                // Bind to the current WiFi network to ensure TCP goes over the right interface
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                    val networks = connectivityManager.allNetworks
+                    for (network in networks) {
+                        val caps = connectivityManager.getNetworkCapabilities(network)
+                        if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
+                            Log.i(TAG, "Binding process to WiFi network")
+                            connectivityManager.bindProcessToNetwork(network)
+                            boundNetwork.set(network)
+                            break
+                        }
+                    }
+                }
                 return true
             }
 
