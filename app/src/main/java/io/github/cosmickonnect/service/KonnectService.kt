@@ -179,10 +179,8 @@ class KonnectService : Service() {
             // Create BLE advertiser
             bleAdvertiser = BleAdvertiser(this) { deviceId, deviceName, ipAddress ->
                 Log.i(TAG, "BLE connection request from $deviceName ($deviceId) at $ipAddress")
-                // Attempt TCP connection to the requesting device
-                serviceScope.launch {
-                    deviceManager?.connectToDevice(deviceId, deviceName, ipAddress, NetworkPacket.DEFAULT_TCP_PORT)
-                }
+                // NOTE: Don't connect here via deviceManager (old protocol).
+                // CkpServiceManager will handle the connection with the correct CKP protocol.
             }
 
             // Create BLE scanner
@@ -337,24 +335,9 @@ class KonnectService : Service() {
     private fun handleBleDeviceDiscovered(bleDevice: BleDiscoveredDevice) {
         Log.i(TAG, "BLE discovered device: ${bleDevice.deviceName} (${bleDevice.deviceId})")
         Log.i(TAG, "  IPs: ${bleDevice.ipAddresses}, Port: ${bleDevice.tcpPort}")
-
-        // Try to connect via TCP using the device's IP addresses
-        serviceScope.launch {
-            for (ip in bleDevice.ipAddresses) {
-                try {
-                    Log.i(TAG, "Attempting TCP connection to ${bleDevice.deviceName} at $ip:${bleDevice.tcpPort}")
-                    deviceManager?.connectToDevice(
-                        bleDevice.deviceId,
-                        bleDevice.deviceName,
-                        ip,
-                        bleDevice.tcpPort
-                    )
-                    break // Success, stop trying other IPs
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to connect to $ip: ${e.message}")
-                }
-            }
-        }
+        // NOTE: Don't connect here via deviceManager (old protocol).
+        // CkpServiceManager handles BLE discoveries and connects via the new CKP protocol.
+        // The ckpService has its own BLE scanner that will handle the connection.
     }
 
     /**

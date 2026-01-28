@@ -7,7 +7,13 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.RingtoneManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.Uri
+import android.net.wifi.WifiManager
+import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -17,7 +23,10 @@ import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import io.github.cosmickonnect.ble.BleAdvertiser
+import io.github.cosmickonnect.ble.BleDiscoveredDevice
 import io.github.cosmickonnect.ble.BleScanner
 import io.github.cosmickonnect.protocol.DeviceIdentity
 import java.util.UUID
@@ -181,12 +190,7 @@ class CkpServiceManager(private val context: Context) {
             // Also start BLE scanner to discover other devices
             bleScanner = BleScanner(context) { bleDevice ->
                 Log.i(TAG, "BLE discovered: ${bleDevice.deviceName} (${bleDevice.deviceId})")
-                // Try to connect using the IP from BLE
-                bleDevice.ipAddresses.firstOrNull()?.let { ip ->
-                    scope.launch {
-                        connectionManager?.connect(bleDevice.deviceId, ip, bleDevice.tcpPort)
-                    }
-                }
+                handleBleDiscoveredDevice(bleDevice)
             }
             if (bleScanner?.initialize() == true) {
                 bleScanner?.startScanning()
@@ -195,6 +199,151 @@ class CkpServiceManager(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start BLE: ${e.message}")
         }
+    }
+
+    /**
+     * Handle a discovered BLE device - connect via hotspot if available, otherwise direct IP.
+     */
+    private fun handleBleDiscoveredDevice(bleDevice: BleDiscoveredDevice) {
+        scope.launch(Dispatchers.IO) {
+            // If hotspot credentials are available, try connecting to hotspot first
+            if (bleDevice.hotspotSsid != null && bleDevice.hotspotPassword != null) {
+                Log.i(TAG, "Hotspot available: ${bleDevice.hotspotSsid} - attempting connection")
+                val connected = connectToHotspot(bleDevice.hotspotSsid, bleDevice.hotspotPassword)
+                if (connected) {
+                    // Wait briefly for network to stabilize
+                    delay(2000)
+                    // The hotspot IP is typically 10.42.0.1 for NetworkManager
+                    val hotspotIp = "10.42.0.1"
+                    Log.i(TAG, "Connecting to device at hotspot IP: $hotspotIp")
+                    connectionManager?.connect(bleDevice.deviceId, hotspotIp, bleDevice.tcpPort)
+                    return@launch
+                }
+            }
+
+            // Fall back to direct IP connection
+            bleDevice.ipAddresses.firstOrNull()?.let { ip ->
+                Log.i(TAG, "Connecting to device at IP: $ip")
+                connectionManager?.connect(bleDevice.deviceId, ip, bleDevice.tcpPort)
+            }
+        }
+    }
+
+    // Store the bound network for use in connections
+    private val boundNetwork = AtomicReference<Network?>(null)
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * Connect to a WiFi hotspot using WifiNetworkSpecifier.
+     * This shows a system dialog on Android 10+ to connect to the specific network.
+     * Returns true if connection was initiated successfully.
+     */
+    private suspend fun connectToHotspot(ssid: String, password: String): Boolean {
+        try {
+            val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            if (wifiManager == null) {
+                Log.e(TAG, "WiFi manager not available")
+                return false
+            }
+
+            // Check if already connected to this hotspot
+            @Suppress("DEPRECATION")
+            val currentSsid = wifiManager.connectionInfo?.ssid?.trim('"')
+            if (currentSsid == ssid) {
+                Log.i(TAG, "Already connected to hotspot $ssid")
+                return true
+            }
+
+            // For Android 10+, use WifiNetworkSpecifier with ConnectivityManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val specifier = WifiNetworkSpecifier.Builder()
+                    .setSsid(ssid)
+                    .setWpa2Passphrase(password)
+                    .build()
+
+                val request = NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .setNetworkSpecifier(specifier)
+                    .build()
+
+                val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+                // Use atomic flag for thread-safe callback communication
+                val connected = AtomicBoolean(false)
+                val failed = AtomicBoolean(false)
+
+                val callback = object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        Log.i(TAG, "Connected to hotspot network $ssid via callback")
+                        // Store the bound network
+                        boundNetwork.set(network)
+                        // Bind this process to use the hotspot network
+                        connectivityManager.bindProcessToNetwork(network)
+                        connected.set(true)
+                    }
+
+                    override fun onUnavailable() {
+                        Log.w(TAG, "Hotspot network $ssid unavailable - user may have declined")
+                        failed.set(true)
+                    }
+
+                    override fun onLost(network: Network) {
+                        Log.w(TAG, "Lost hotspot network $ssid")
+                        boundNetwork.set(null)
+                        connectivityManager.bindProcessToNetwork(null)
+                    }
+                }
+
+                // Clean up any previous callback
+                networkCallback?.let {
+                    try {
+                        connectivityManager.unregisterNetworkCallback(it)
+                    } catch (e: Exception) {
+                        // Ignore
+                    }
+                }
+                networkCallback = callback
+
+                Log.i(TAG, "Requesting connection to hotspot $ssid (system dialog should appear)")
+                connectivityManager.requestNetwork(request, callback)
+
+                // Wait for connection via callback - 30 seconds timeout
+                for (i in 1..30) {
+                    if (connected.get()) {
+                        Log.i(TAG, "Successfully connected to hotspot $ssid")
+                        return true
+                    }
+                    if (failed.get()) {
+                        Log.w(TAG, "Hotspot connection failed - user declined or network unavailable")
+                        return false
+                    }
+                    delay(1000)
+                }
+                Log.w(TAG, "Hotspot connection timed out - user may need to approve the dialog")
+                return false
+            } else {
+                // Legacy WiFi connection for older Android versions
+                @Suppress("DEPRECATION")
+                val wifiConfig = android.net.wifi.WifiConfiguration().apply {
+                    SSID = "\"$ssid\""
+                    preSharedKey = "\"$password\""
+                }
+
+                @Suppress("DEPRECATION")
+                val netId = wifiManager.addNetwork(wifiConfig)
+                if (netId != -1) {
+                    @Suppress("DEPRECATION")
+                    wifiManager.enableNetwork(netId, true)
+                    Log.i(TAG, "Connecting to hotspot $ssid (legacy)")
+                    delay(5000) // Wait for connection
+                    return true
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to connect to hotspot: ${e.message}", e)
+        }
+        return false
     }
 
     /**
