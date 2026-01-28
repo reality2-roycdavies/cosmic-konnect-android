@@ -44,7 +44,9 @@ data class DiscoveredDevice(
     val rssi: Int? = null,  // Signal strength (BLE only)
     val bleAddress: String? = null,  // BLE MAC address
     val wifiDirectAddress: String? = null,  // Wi-Fi Direct MAC address
-    val lastSeen: Long = System.currentTimeMillis()
+    val lastSeen: Long = System.currentTimeMillis(),
+    val hotspotSsid: String? = null,  // WiFi hotspot SSID for fallback connection
+    val hotspotPassword: String? = null  // WiFi hotspot password
 )
 
 /**
@@ -304,15 +306,93 @@ class UnifiedDiscoveryManager(
             tcpPort = bleDevice.tcpPort,
             discoveryMethod = DiscoveryMethod.BLE,
             rssi = bleDevice.rssi,
-            bleAddress = bleDevice.bleAddress
+            bleAddress = bleDevice.bleAddress,
+            hotspotSsid = bleDevice.hotspotSsid,
+            hotspotPassword = bleDevice.hotspotPassword
         )
 
         addOrUpdateDevice(device)
 
-        // If we have IP addresses, notify that connection is available
-        if (bleDevice.ipAddresses.isNotEmpty()) {
+        // If hotspot credentials are available, try connecting to hotspot
+        if (bleDevice.hotspotSsid != null && bleDevice.hotspotPassword != null) {
+            Log.i(TAG, "Hotspot available: ${bleDevice.hotspotSsid} - attempting connection")
+            connectToHotspot(bleDevice.hotspotSsid, bleDevice.hotspotPassword, device)
+        } else if (bleDevice.ipAddresses.isNotEmpty()) {
+            // If we have IP addresses, notify that connection is available
             callback.onConnectionAvailable(device, bleDevice.ipAddresses.first(), bleDevice.tcpPort)
         }
+    }
+
+    /**
+     * Connect to a WiFi hotspot and then establish connection to the device.
+     */
+    private fun connectToHotspot(ssid: String, password: String, device: DiscoveredDevice) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+                if (wifiManager == null) {
+                    Log.e(TAG, "WiFi manager not available")
+                    return@launch
+                }
+
+                // Check if already connected to this hotspot
+                val currentSsid = wifiManager.connectionInfo?.ssid?.trim('"')
+                if (currentSsid == ssid) {
+                    Log.i(TAG, "Already connected to hotspot $ssid")
+                    // Get the gateway IP (hotspot host)
+                    val dhcpInfo = wifiManager.dhcpInfo
+                    if (dhcpInfo != null) {
+                        val gatewayIp = intToIp(dhcpInfo.gateway)
+                        Log.i(TAG, "Hotspot gateway: $gatewayIp")
+                        callback.onConnectionAvailable(device, gatewayIp, device.tcpPort)
+                    }
+                    return@launch
+                }
+
+                // For Android 10+, use WifiNetworkSuggestion API
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val suggestion = android.net.wifi.WifiNetworkSuggestion.Builder()
+                        .setSsid(ssid)
+                        .setWpa2Passphrase(password)
+                        .build()
+
+                    val suggestionsList = listOf(suggestion)
+                    val status = wifiManager.addNetworkSuggestions(suggestionsList)
+
+                    if (status == android.net.wifi.WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) {
+                        Log.i(TAG, "WiFi network suggestion added for $ssid")
+                        // The system will auto-connect when appropriate
+                        // For now, notify with the device's advertised IPs
+                        if (device.ipAddresses.isNotEmpty()) {
+                            callback.onConnectionAvailable(device, device.ipAddresses.first(), device.tcpPort)
+                        }
+                    } else {
+                        Log.w(TAG, "Failed to add network suggestion: $status")
+                    }
+                } else {
+                    // Legacy WiFi connection for older Android versions
+                    @Suppress("DEPRECATION")
+                    val wifiConfig = android.net.wifi.WifiConfiguration().apply {
+                        SSID = "\"$ssid\""
+                        preSharedKey = "\"$password\""
+                    }
+
+                    @Suppress("DEPRECATION")
+                    val netId = wifiManager.addNetwork(wifiConfig)
+                    if (netId != -1) {
+                        @Suppress("DEPRECATION")
+                        wifiManager.enableNetwork(netId, true)
+                        Log.i(TAG, "Connecting to hotspot $ssid")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to connect to hotspot: ${e.message}")
+            }
+        }
+    }
+
+    private fun intToIp(ip: Int): String {
+        return "${ip and 0xFF}.${(ip shr 8) and 0xFF}.${(ip shr 16) and 0xFF}.${(ip shr 24) and 0xFF}"
     }
 
     private fun handleWifiDirectDevice(wifiDevice: WifiDirectDevice) {
