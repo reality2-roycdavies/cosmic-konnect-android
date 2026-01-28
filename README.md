@@ -182,6 +182,18 @@ app/src/main/java/io/github/cosmickonnect/
 └── wifidirect/          # Wi-Fi Direct (WIP)
 ```
 
+## Educational Documentation
+
+This project was developed as an educational resource demonstrating cross-platform application development. The desktop repository contains detailed development logs and thematic analysis:
+
+- [Development Logs](https://github.com/reality2-roycdavies/cosmic-konnect/tree/main/docs/development-logs) - Documentation of the development process
+- [Thematic Analysis](https://github.com/reality2-roycdavies/cosmic-konnect/blob/main/docs/development-logs/THEMATIC_ANALYSIS.md) - In-depth analysis covering protocol design, encryption, Android patterns, Rust async, and debugging techniques
+
+This is part of a series of educational COSMIC desktop projects:
+- [cosmic-runkat](https://github.com/reality2-roycdavies/cosmic-runkat) - COSMIC applet development
+- [cosmic-bing-wallpaper](https://github.com/reality2-roycdavies/cosmic-bing-wallpaper) - Background service development
+- [cosmic-pie-menu](https://github.com/reality2-roycdavies/cosmic-pie-menu) - Custom UI development
+
 ## License
 
 MIT License - see LICENSE file for details.
