@@ -26,6 +26,7 @@ import io.github.cosmickonnect.ckp.CkpServiceManager
 import io.github.cosmickonnect.protocol.DeviceIdentity
 import io.github.cosmickonnect.protocol.DeviceManager
 import io.github.cosmickonnect.protocol.Discovery
+import io.github.cosmickonnect.protocol.NetworkPacket
 import io.github.cosmickonnect.ui.MainActivity
 import io.github.cosmickonnect.wifidirect.WifiDirectConnectionInfo
 import io.github.cosmickonnect.wifidirect.WifiDirectDevice
@@ -75,7 +76,7 @@ class KonnectService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.w(TAG, "KonnectService onCreate")
+        Log.i(TAG, "KonnectService onCreate")
         deviceManager = DeviceManager(this)
         discovery = Discovery(this, deviceManager!!)
 
@@ -180,7 +181,7 @@ class KonnectService : Service() {
                 Log.i(TAG, "BLE connection request from $deviceName ($deviceId) at $ipAddress")
                 // Attempt TCP connection to the requesting device
                 serviceScope.launch {
-                    deviceManager?.connectToDevice(deviceId, deviceName, ipAddress, 1716)
+                    deviceManager?.connectToDevice(deviceId, deviceName, ipAddress, NetworkPacket.DEFAULT_TCP_PORT)
                 }
             }
 
@@ -271,7 +272,7 @@ class KonnectService : Service() {
                             "wifidirect-${ip.replace(".", "_")}",
                             "Wi-Fi Direct Device",
                             ip,
-                            1716
+                            NetworkPacket.DEFAULT_TCP_PORT
                         )
                     }
                     // If we are the group owner, we wait for incoming connections
@@ -301,7 +302,7 @@ class KonnectService : Service() {
 
         // Register our service for discovery by other devices
         val identity = DeviceIdentity.getIdentity(this)
-        wifiDirectManager?.registerService(identity.deviceId, identity.deviceName, 1716)
+        wifiDirectManager?.registerService(identity.deviceId, identity.deviceName, NetworkPacket.DEFAULT_TCP_PORT)
 
         // Start peer discovery
         wifiDirectManager?.startDiscovery()
@@ -425,20 +426,20 @@ class KonnectService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.w(TAG, "KonnectService onStartCommand")
+        Log.i(TAG, "KonnectService onStartCommand")
         startForeground(NOTIFICATION_ID, createNotification())
 
         serviceScope.launch {
             try {
                 // Start CKP (Cosmic Konnect Protocol) - new protocol
-                Log.w(TAG, "Starting CKP service...")
+                Log.i(TAG, "Starting CKP service...")
                 ckpService?.start()
-                Log.w(TAG, "CKP service started")
+                Log.i(TAG, "CKP service started")
 
                 // Also start legacy KDE Connect discovery
-                Log.w(TAG, "Starting KDE Connect discovery...")
+                Log.i(TAG, "Starting KDE Connect discovery...")
                 discovery?.start()
-                Log.w(TAG, "Discovery started successfully")
+                Log.i(TAG, "Discovery started successfully")
 
                 // Also start BLE discovery
                 if (hasBlePermissions()) {
@@ -458,13 +459,13 @@ class KonnectService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder {
-        Log.w(TAG, "KonnectService onBind")
+        Log.i(TAG, "KonnectService onBind")
         return binder
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        Log.w(TAG, "KonnectService onDestroy")
+        Log.i(TAG, "KonnectService onDestroy")
         serviceScope.cancel()
         ckpService?.stop()
         discovery?.stop()
@@ -516,7 +517,13 @@ class KonnectService : Service() {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(System.currentTimeMillis().toInt(), notification)
 
-        // Vibrate
+        vibrate(500)
+    }
+
+    /**
+     * Vibrate for a given duration in milliseconds
+     */
+    private fun vibrate(durationMs: Long) {
         val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
             vibratorManager.defaultVibrator
@@ -526,10 +533,10 @@ class KonnectService : Service() {
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vibrator.vibrate(VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE))
+            vibrator.vibrate(VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE))
         } else {
             @Suppress("DEPRECATION")
-            vibrator.vibrate(500)
+            vibrator.vibrate(durationMs)
         }
     }
 
@@ -537,20 +544,7 @@ class KonnectService : Service() {
      * Short vibration for clipboard received feedback
      */
     private fun vibrateShort() {
-        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-            vibratorManager.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vibrator.vibrate(VibrationEffect.createOneShot(100, VibrationEffect.DEFAULT_AMPLITUDE))
-        } else {
-            @Suppress("DEPRECATION")
-            vibrator.vibrate(100)
-        }
+        vibrate(100)
     }
 
 }

@@ -37,6 +37,10 @@ data class NetworkPacket(
         // Protocol version
         const val PROTOCOL_VERSION = 7
 
+        // Default ports
+        const val DEFAULT_TCP_PORT = 1716
+        const val DEFAULT_UDP_PORT = 1716
+
         private val json = Json {
             ignoreUnknownKeys = true
             encodeDefaults = true

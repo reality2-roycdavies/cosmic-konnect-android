@@ -22,6 +22,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import io.github.cosmickonnect.protocol.NetworkPacket
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -335,7 +336,7 @@ class BleScanner(
                             deviceName = deviceName!!,
                             deviceType = deviceType ?: "unknown",
                             ipAddresses = ipAddresses?.split(",")?.filter { it.isNotEmpty() } ?: emptyList(),
-                            tcpPort = tcpPort?.toIntOrNull() ?: 1716,
+                            tcpPort = tcpPort?.toIntOrNull() ?: NetworkPacket.DEFAULT_TCP_PORT,
                             protocolVersion = protocolVersion?.toIntOrNull() ?: 7,
                             rssi = rssi
                         )

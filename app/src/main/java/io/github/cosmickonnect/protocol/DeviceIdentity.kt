@@ -16,7 +16,7 @@ data class DeviceIdentity(
     val protocolVersion: Int = NetworkPacket.PROTOCOL_VERSION,
     val incomingCapabilities: List<String>,
     val outgoingCapabilities: List<String>,
-    val tcpPort: Int = 1716
+    val tcpPort: Int = NetworkPacket.DEFAULT_TCP_PORT
 ) {
     companion object {
         private var cachedIdentity: DeviceIdentity? = null

@@ -10,6 +10,7 @@ import io.github.cosmickonnect.ble.BleDiscoveredDevice
 import io.github.cosmickonnect.ble.BleScanner
 import io.github.cosmickonnect.protocol.DeviceIdentity
 import io.github.cosmickonnect.protocol.Discovery
+import io.github.cosmickonnect.protocol.NetworkPacket
 import io.github.cosmickonnect.wifidirect.WifiDirectConnectionInfo
 import io.github.cosmickonnect.wifidirect.WifiDirectDevice
 import io.github.cosmickonnect.wifidirect.WifiDirectManager
@@ -149,10 +150,10 @@ class UnifiedDiscoveryManager(
                 deviceName = deviceName,
                 deviceType = "unknown",
                 ipAddresses = listOf(ipAddress),
-                tcpPort = 1716,
+                tcpPort = NetworkPacket.DEFAULT_TCP_PORT,
                 discoveryMethod = DiscoveryMethod.BLE
             )
-            callback.onConnectionAvailable(device, ipAddress, 1716)
+            callback.onConnectionAvailable(device, ipAddress, NetworkPacket.DEFAULT_TCP_PORT)
         }
 
         // Create BLE scanner
@@ -207,7 +208,7 @@ class UnifiedDiscoveryManager(
                 try {
                     if (wifiDirectManager?.initialize() == true) {
                         val identity = DeviceIdentity.getIdentity(context)
-                        wifiDirectManager?.registerService(identity.deviceId, identity.deviceName, 1716)
+                        wifiDirectManager?.registerService(identity.deviceId, identity.deviceName, NetworkPacket.DEFAULT_TCP_PORT)
                         wifiDirectManager?.startDiscovery()
                         wifiDirectManager?.discoverServices { deviceAddress, deviceId, deviceName, tcpPort ->
                             handleWifiDirectService(deviceAddress, deviceId, deviceName, tcpPort)

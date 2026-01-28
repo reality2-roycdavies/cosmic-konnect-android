@@ -59,7 +59,7 @@ class DeviceManager(private val context: Context) {
             name = deviceName,
             type = deviceType,
             address = address,
-            port = if (port > 0) port else 1716  // Ensure valid port
+            port = if (port > 0) port else NetworkPacket.DEFAULT_TCP_PORT  // Ensure valid port
         )
         discoveredDevices[deviceId] = device
 

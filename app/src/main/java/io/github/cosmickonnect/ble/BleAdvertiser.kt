@@ -17,6 +17,7 @@ import android.content.Context
 import android.os.ParcelUuid
 import android.util.Log
 import io.github.cosmickonnect.protocol.DeviceIdentity
+import io.github.cosmickonnect.protocol.NetworkPacket
 import java.net.NetworkInterface
 
 /**
@@ -271,7 +272,7 @@ class BleAdvertiser(
                     BleConstants.CHAR_DEVICE_NAME -> deviceIdentity.deviceName
                     BleConstants.CHAR_DEVICE_TYPE -> deviceIdentity.deviceType
                     BleConstants.CHAR_IP_ADDRESS -> getIpAddresses()
-                    BleConstants.CHAR_TCP_PORT -> "1716"
+                    BleConstants.CHAR_TCP_PORT -> NetworkPacket.DEFAULT_TCP_PORT.toString()
                     BleConstants.CHAR_PROTOCOL_VERSION -> "7"
                     else -> null
                 }
