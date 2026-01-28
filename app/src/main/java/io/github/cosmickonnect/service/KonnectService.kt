@@ -115,6 +115,8 @@ class KonnectService : Service() {
                         clipboardManager?.setPrimaryClip(
                             android.content.ClipData.newPlainText("Cosmic Konnect", content)
                         )
+                        // Short vibration to indicate clipboard received
+                        vibrateShort()
                     } finally {
                         // Reset flag after a short delay to allow clipboard listener to fire
                         android.os.Handler(mainLooper).postDelayed({
@@ -528,6 +530,26 @@ class KonnectService : Service() {
         } else {
             @Suppress("DEPRECATION")
             vibrator.vibrate(500)
+        }
+    }
+
+    /**
+     * Short vibration for clipboard received feedback
+     */
+    private fun vibrateShort() {
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+            vibratorManager.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createOneShot(100, VibrationEffect.DEFAULT_AMPLITUDE))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(100)
         }
     }
 
