@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- COSMIC-inspired colors -->
+    <color name="cosmic_purple">#6B4C9A</color>
+    <color name="cosmic_purple_light">#9B7BC9</color>
+    <color name="cosmic_purple_dark">#3E206B</color>
+
+    <color name="cosmic_background_dark">#1A1A2E</color>
+    <color name="cosmic_surface_dark">#16213E</color>
+
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+</resources>

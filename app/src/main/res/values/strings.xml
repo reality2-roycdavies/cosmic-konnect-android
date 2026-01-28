@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Cosmic Konnect</string>
+    <string name="service_notification_title">Cosmic Konnect is running</string>
+    <string name="service_notification_text">Listening for devices on the network</string>
+    <string name="no_devices">No devices connected</string>
+    <string name="pair">Pair</string>
+    <string name="unpair">Unpair</string>
+    <string name="ping">Ping</string>
+    <string name="send_file">Send File</string>
+    <string name="settings">Settings</string>
+</resources>
