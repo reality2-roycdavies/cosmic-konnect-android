@@ -65,6 +65,9 @@
     <!-- Notification access (Phase 2) -->
     <!-- Requires NotificationListenerService -->
 
+    <!-- Autostart on boot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <application
         android:name=".CosmicKonnectApp"
         android:allowBackup="true"
@@ -90,6 +93,17 @@
             android:name=".service.KonnectService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- Boot receiver for autostart -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
 
         <!-- File provider for sharing files -->
         <provider
