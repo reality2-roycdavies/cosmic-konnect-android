@@ -260,9 +260,6 @@ fun MainScreen(
                     IconButton(onClick = onShareClipboard) {
                         Icon(Icons.Default.ContentCopy, contentDescription = "Share Clipboard")
                     }
-                    IconButton(onClick = { /* Settings */ }) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
-                    }
                 }
             )
         },
