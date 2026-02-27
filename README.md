@@ -2,6 +2,8 @@
 
 Android companion app for [Cosmic Konnect](https://github.com/reality2-roycdavies/cosmic-konnect), enabling seamless communication between your Android device and Linux desktop running the COSMIC desktop environment.
 
+> **Early Alpha** - This project is in early alpha. Core functionality (discovery, pairing, clipboard sync) is being developed but many features are not yet working. Expect breaking changes and incomplete behaviour.
+
 **Desktop app:** [cosmic-konnect](https://github.com/reality2-roycdavies/cosmic-konnect)
 
 ## Features
@@ -189,14 +191,19 @@ This project was developed as an educational resource demonstrating cross-platfo
 - [Development Logs](https://github.com/reality2-roycdavies/cosmic-konnect/tree/main/docs/development-logs) - Documentation of the development process
 - [Thematic Analysis](https://github.com/reality2-roycdavies/cosmic-konnect/blob/main/docs/development-logs/THEMATIC_ANALYSIS.md) - In-depth analysis covering protocol design, encryption, Android patterns, Rust async, and debugging techniques
 
-## Related COSMIC Applets
+## Related COSMIC Projects
 
-This is part of a suite of custom applets for the COSMIC desktop:
+| Project | Description |
+|---------|-------------|
+| **[cosmic-konnect](https://github.com/reality2-roycdavies/cosmic-konnect)** | Desktop companion - device connectivity and sync for Linux |
+
+### COSMIC Applet Suite
+
+A suite of custom COSMIC panel applets with a [unified settings app](https://github.com/reality2-roycdavies/cosmic-applet-settings):
 
 | Applet | Description |
 |--------|-------------|
-| **[cosmic-applet-settings](https://github.com/reality2-roycdavies/cosmic-applet-settings)** | Unified settings app for all custom COSMIC applets |
-| **[cosmic-konnect](https://github.com/reality2-roycdavies/cosmic-konnect)** | Desktop companion - device connectivity and sync for Linux |
+| **[cosmic-applet-settings](https://github.com/reality2-roycdavies/cosmic-applet-settings)** | Unified settings app for the applet suite |
 | **[cosmic-runkat](https://github.com/reality2-roycdavies/cosmic-runkat)** | Animated running cat CPU indicator for the panel |
 | **[cosmic-bing-wallpaper](https://github.com/reality2-roycdavies/cosmic-bing-wallpaper)** | Daily Bing wallpaper manager with auto-update |
 | **[cosmic-pie-menu](https://github.com/reality2-roycdavies/cosmic-pie-menu)** | Radial/pie menu app launcher with gesture support |
