@@ -164,7 +164,7 @@ Note: Release builds require signing configuration in `app/build.gradle`.
 ## Project Structure
 
 ```
-app/src/main/java/io/github/cosmickonnect/
+app/src/main/java/io/github/reality2_roycdavies/cosmickonnect/
 ├── ble/                 # BLE discovery (WIP)
 ├── ckp/                 # Cosmic Konnect Protocol implementation
 │   ├── Connection.kt    # TCP connection handling
@@ -189,10 +189,19 @@ This project was developed as an educational resource demonstrating cross-platfo
 - [Development Logs](https://github.com/reality2-roycdavies/cosmic-konnect/tree/main/docs/development-logs) - Documentation of the development process
 - [Thematic Analysis](https://github.com/reality2-roycdavies/cosmic-konnect/blob/main/docs/development-logs/THEMATIC_ANALYSIS.md) - In-depth analysis covering protocol design, encryption, Android patterns, Rust async, and debugging techniques
 
-This is part of a series of educational COSMIC desktop projects:
-- [cosmic-runkat](https://github.com/reality2-roycdavies/cosmic-runkat) - COSMIC applet development
-- [cosmic-bing-wallpaper](https://github.com/reality2-roycdavies/cosmic-bing-wallpaper) - Background service development
-- [cosmic-pie-menu](https://github.com/reality2-roycdavies/cosmic-pie-menu) - Custom UI development
+## Related COSMIC Applets
+
+This is part of a suite of custom applets for the COSMIC desktop:
+
+| Applet | Description |
+|--------|-------------|
+| **[cosmic-applet-settings](https://github.com/reality2-roycdavies/cosmic-applet-settings)** | Unified settings app for all custom COSMIC applets |
+| **[cosmic-konnect](https://github.com/reality2-roycdavies/cosmic-konnect)** | Desktop companion - device connectivity and sync for Linux |
+| **[cosmic-runkat](https://github.com/reality2-roycdavies/cosmic-runkat)** | Animated running cat CPU indicator for the panel |
+| **[cosmic-bing-wallpaper](https://github.com/reality2-roycdavies/cosmic-bing-wallpaper)** | Daily Bing wallpaper manager with auto-update |
+| **[cosmic-pie-menu](https://github.com/reality2-roycdavies/cosmic-pie-menu)** | Radial/pie menu app launcher with gesture support |
+| **[cosmic-tailscale](https://github.com/reality2-roycdavies/cosmic-tailscale)** | Tailscale VPN status and control applet |
+| **[cosmic-hotspot](https://github.com/reality2-roycdavies/cosmic-hotspot)** | WiFi hotspot toggle applet |
 
 ## License
 
@@ -204,6 +213,5 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 
 ## Related Projects
 
-- [cosmic-konnect](https://github.com/reality2-roycdavies/cosmic-konnect) - Linux desktop app
 - [COSMIC Desktop](https://github.com/pop-os/cosmic-epoch) - The COSMIC desktop environment
 - [KDE Connect](https://kdeconnect.kde.org/) - Inspiration for this project
