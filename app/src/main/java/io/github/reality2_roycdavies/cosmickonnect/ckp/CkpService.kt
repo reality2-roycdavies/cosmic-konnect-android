@@ -1,0 +1,672 @@
+package io.github.reality2_roycdavies.cosmickonnect.ckp
+
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.RingtoneManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.Uri
+import android.net.wifi.WifiManager
+import android.net.wifi.WifiNetworkSpecifier
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.provider.Settings
+import android.util.Log
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import io.github.reality2_roycdavies.cosmickonnect.ble.BleAdvertiser
+import io.github.reality2_roycdavies.cosmickonnect.ble.BleDiscoveredDevice
+import io.github.reality2_roycdavies.cosmickonnect.ble.BleScanner
+import io.github.reality2_roycdavies.cosmickonnect.protocol.DeviceIdentity
+import java.util.UUID
+
+/**
+ * Device state for UI
+ */
+data class CkpDeviceState(
+    val deviceId: String,
+    val name: String,
+    val deviceType: DeviceType,
+    val paired: Boolean,
+    val connected: Boolean
+)
+
+/**
+ * CKP Service for Android
+ *
+ * Manages discovery, connections, and message handling.
+ */
+class CkpServiceManager(private val context: Context) {
+    private val TAG = "CkpServiceManager"
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+
+    private lateinit var identity: Identity
+    private var discovery: CkpDiscovery? = null
+    private var mdnsDiscovery: MdnsDiscovery? = null
+    private var connectionManager: CkpConnectionManager? = null
+    private var bleAdvertiser: BleAdvertiser? = null
+    private var bleScanner: BleScanner? = null
+
+    private val _devices = MutableStateFlow<Map<String, CkpDeviceState>>(emptyMap())
+    val devices: StateFlow<Map<String, CkpDeviceState>> = _devices
+
+    private val _isRunning = MutableStateFlow(false)
+    val isRunning: StateFlow<Boolean> = _isRunning
+
+    /** Get our device name */
+    val deviceName: String
+        get() = if (::identity.isInitialized) identity.name else "Android"
+
+    private val pairedDevices = mutableMapOf<String, ByteArray>() // deviceId -> pairingKey
+
+    // Auto-accept pairing (Apple-style seamless sync)
+    var autoAcceptPairing = true
+
+    // Event callbacks
+    var onPairingRequested: ((deviceId: String, deviceName: String, verificationCode: String) -> Unit)? = null
+    var onDeviceConnected: ((deviceId: String, deviceName: String) -> Unit)? = null
+    var onDeviceDisconnected: ((deviceId: String) -> Unit)? = null
+    var onPingReceived: ((deviceId: String, message: String?) -> Unit)? = null
+    var onClipboardReceived: ((deviceId: String, content: String) -> Unit)? = null
+    var onNotificationReceived: ((deviceId: String, notification: Notification) -> Unit)? = null
+    var onFileOfferReceived: ((deviceId: String, filename: String, size: Long) -> Unit)? = null
+
+    /**
+     * Initialize the service
+     */
+    fun initialize() {
+        // Load or create device identity
+        val prefs = context.getSharedPreferences("ckp_identity", Context.MODE_PRIVATE)
+        val deviceId = prefs.getString("device_id", null) ?: run {
+            val newId = UUID.randomUUID().toString()
+            prefs.edit().putString("device_id", newId).apply()
+            newId
+        }
+
+        val deviceName = Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)
+            ?: Build.MODEL
+
+        identity = Identity(
+            deviceId = deviceId,
+            name = deviceName,
+            deviceType = DeviceType.PHONE,
+            tcpPort = Protocol.TCP_PORT
+        )
+
+        Log.i(TAG, "Initialized as $deviceName ($deviceId)")
+
+        // Load paired devices
+        loadPairedDevices()
+    }
+
+    /**
+     * Start the CKP service
+     */
+    fun start() {
+        if (_isRunning.value) return
+
+        // Start UDP broadcast discovery
+        discovery = CkpDiscovery(context, identity) { device ->
+            handleDeviceDiscovered(device)
+        }
+        discovery?.start()
+
+        // Start mDNS discovery (for daemon interop)
+        mdnsDiscovery = MdnsDiscovery(context, identity) { device ->
+            handleDeviceDiscovered(device)
+        }
+        mdnsDiscovery?.start()
+        Log.i(TAG, "mDNS discovery started")
+
+        // Start connection manager
+        connectionManager = CkpConnectionManager(identity) { event ->
+            handleConnectionEvent(event)
+        }
+
+        // Start TCP listener for incoming connections
+        if (connectionManager?.startListener() == true) {
+            Log.i(TAG, "CKP TCP listener started on port ${Protocol.TCP_PORT}")
+        } else {
+            Log.e(TAG, "Failed to start CKP TCP listener")
+        }
+
+        // Start BLE advertising with CKP port
+        startBleAdvertising()
+
+        _isRunning.value = true
+        Log.i(TAG, "CKP service started")
+    }
+
+    /**
+     * Stop the CKP service
+     */
+    fun stop() {
+        discovery?.stop()
+        discovery = null
+
+        mdnsDiscovery?.stop()
+        mdnsDiscovery = null
+
+        connectionManager?.getConnectedDevices()?.forEach { deviceId ->
+            connectionManager?.disconnect(deviceId)
+        }
+        connectionManager?.stopListener()
+        connectionManager = null
+
+        // Stop BLE
+        bleAdvertiser?.stopAdvertising()
+        bleScanner?.stopScanning()
+        bleAdvertiser = null
+        bleScanner = null
+
+        _isRunning.value = false
+        Log.i(TAG, "CKP service stopped")
+    }
+
+    /**
+     * Start BLE advertising so other devices can discover us
+     */
+    private fun startBleAdvertising() {
+        try {
+            // Create BLE advertiser with CKP port (17161)
+            bleAdvertiser = BleAdvertiser(context, Protocol.TCP_PORT) { deviceId, deviceName, ipAddress ->
+                Log.i(TAG, "BLE connection request from $deviceName ($deviceId) at $ipAddress")
+                // Attempt to connect to the requesting device
+                scope.launch {
+                    connectionManager?.connect(deviceId, ipAddress, Protocol.TCP_PORT)
+                }
+            }
+
+            if (bleAdvertiser?.initialize() == true) {
+                if (bleAdvertiser?.startAdvertising() == true) {
+                    Log.i(TAG, "BLE advertising started on CKP port ${Protocol.TCP_PORT}")
+                } else {
+                    Log.w(TAG, "Failed to start BLE advertising")
+                }
+            } else {
+                Log.w(TAG, "BLE advertiser initialization failed")
+            }
+
+            // Also start BLE scanner to discover other devices
+            bleScanner = BleScanner(context) { bleDevice ->
+                Log.i(TAG, "BLE discovered: ${bleDevice.deviceName} (${bleDevice.deviceId})")
+                handleBleDiscoveredDevice(bleDevice)
+            }
+            if (bleScanner?.initialize() == true) {
+                bleScanner?.startScanning()
+                Log.i(TAG, "BLE scanning started")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start BLE: ${e.message}")
+        }
+    }
+
+    /**
+     * Handle a discovered BLE device - connect via hotspot if available, otherwise direct IP.
+     */
+    private fun handleBleDiscoveredDevice(bleDevice: BleDiscoveredDevice) {
+        // Add to device list so it shows in the UI
+        val address = bleDevice.ipAddresses.firstOrNull()?.let {
+            try { java.net.InetAddress.getByName(it) } catch (_: Exception) { null }
+        }
+        if (address != null) {
+            val device = DiscoveredDevice(
+                deviceId = bleDevice.deviceId,
+                name = bleDevice.deviceName,
+                deviceType = DeviceType.fromValue(bleDevice.deviceType),
+                address = address,
+                tcpPort = bleDevice.tcpPort,
+                capabilities = listOf(
+                    Capability.CLIPBOARD,
+                    Capability.FILES,
+                    Capability.NOTIFICATIONS,
+                    Capability.FIND_DEVICE,
+                    Capability.SHARE
+                )
+            )
+            handleDeviceDiscovered(device)
+        }
+
+        scope.launch(Dispatchers.IO) {
+            // Skip if already connected
+            if (connectionManager?.getConnectedDevices()?.contains(bleDevice.deviceId) == true) {
+                return@launch
+            }
+
+            // Try direct IP connections first (non-hotspot IPs)
+            // Filter out hotspot IPs (10.42.x.x) and try regular network IPs
+            val regularIps = bleDevice.ipAddresses.filter { !it.startsWith("10.42.") }
+            for (ip in regularIps) {
+                Log.i(TAG, "Trying direct CKP connection to $ip:${bleDevice.tcpPort}")
+                try {
+                    val success = connectionManager?.connect(bleDevice.deviceId, ip, bleDevice.tcpPort) == true
+                    if (success) {
+                        Log.i(TAG, "Connected to ${bleDevice.deviceName} at $ip")
+                        return@launch
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Direct connection to $ip failed: ${e.message}")
+                }
+            }
+
+            // If direct IPs didn't work, try hotspot as fallback
+            if (bleDevice.hotspotSsid != null && bleDevice.hotspotPassword != null) {
+                Log.i(TAG, "Direct IPs unreachable, trying hotspot: ${bleDevice.hotspotSsid}")
+                val connected = connectToHotspot(bleDevice.hotspotSsid, bleDevice.hotspotPassword)
+                if (connected) {
+                    delay(2000)
+                    val hotspotIp = "10.42.0.1"
+                    Log.i(TAG, "Connecting to device at hotspot IP: $hotspotIp")
+
+                    val network = boundNetwork.get()
+                    if (network != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        Log.i(TAG, "Using bound network socket factory for connection")
+                        connectionManager?.connectWithNetwork(bleDevice.deviceId, hotspotIp, bleDevice.tcpPort, network)
+                    } else {
+                        connectionManager?.connect(bleDevice.deviceId, hotspotIp, bleDevice.tcpPort)
+                    }
+                    return@launch
+                }
+            }
+
+            // Last resort: try hotspot IP directly (already on hotspot network)
+            val hotspotIps = bleDevice.ipAddresses.filter { it.startsWith("10.42.") }
+            for (ip in hotspotIps) {
+                Log.i(TAG, "Trying hotspot IP: $ip:${bleDevice.tcpPort}")
+                connectionManager?.connect(bleDevice.deviceId, ip, bleDevice.tcpPort)
+                return@launch
+            }
+        }
+    }
+
+    // Store the bound network for use in connections
+    private val boundNetwork = AtomicReference<Network?>(null)
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * Connect to a WiFi hotspot using WifiNetworkSpecifier.
+     * This shows a system dialog on Android 10+ to connect to the specific network.
+     * Returns true if connection was initiated successfully.
+     */
+    private suspend fun connectToHotspot(ssid: String, password: String): Boolean {
+        try {
+            val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            if (wifiManager == null) {
+                Log.e(TAG, "WiFi manager not available")
+                return false
+            }
+
+            // Check if already connected to this hotspot
+            @Suppress("DEPRECATION")
+            val currentSsid = wifiManager.connectionInfo?.ssid?.trim('"')
+            if (currentSsid == ssid) {
+                Log.i(TAG, "Already connected to hotspot $ssid")
+                // Bind to the current WiFi network to ensure TCP goes over the right interface
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                    val networks = connectivityManager.allNetworks
+                    for (network in networks) {
+                        val caps = connectivityManager.getNetworkCapabilities(network)
+                        if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
+                            Log.i(TAG, "Binding process to WiFi network")
+                            connectivityManager.bindProcessToNetwork(network)
+                            boundNetwork.set(network)
+                            break
+                        }
+                    }
+                }
+                return true
+            }
+
+            // For Android 10+, use WifiNetworkSpecifier with ConnectivityManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val specifier = WifiNetworkSpecifier.Builder()
+                    .setSsid(ssid)
+                    .setWpa2Passphrase(password)
+                    .build()
+
+                val request = NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .setNetworkSpecifier(specifier)
+                    .build()
+
+                val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+                // Use atomic flag for thread-safe callback communication
+                val connected = AtomicBoolean(false)
+                val failed = AtomicBoolean(false)
+
+                val callback = object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        Log.i(TAG, "Connected to hotspot network $ssid via callback")
+                        // Store the bound network
+                        boundNetwork.set(network)
+                        // Bind this process to use the hotspot network
+                        connectivityManager.bindProcessToNetwork(network)
+                        connected.set(true)
+                    }
+
+                    override fun onUnavailable() {
+                        Log.w(TAG, "Hotspot network $ssid unavailable - user may have declined")
+                        failed.set(true)
+                    }
+
+                    override fun onLost(network: Network) {
+                        Log.w(TAG, "Lost hotspot network $ssid")
+                        boundNetwork.set(null)
+                        connectivityManager.bindProcessToNetwork(null)
+                    }
+                }
+
+                // Clean up any previous callback
+                networkCallback?.let {
+                    try {
+                        connectivityManager.unregisterNetworkCallback(it)
+                    } catch (e: Exception) {
+                        // Ignore
+                    }
+                }
+                networkCallback = callback
+
+                Log.i(TAG, "Requesting connection to hotspot $ssid (system dialog should appear)")
+                connectivityManager.requestNetwork(request, callback)
+
+                // Wait for connection via callback - 30 seconds timeout
+                for (i in 1..30) {
+                    if (connected.get()) {
+                        Log.i(TAG, "Successfully connected to hotspot $ssid")
+                        return true
+                    }
+                    if (failed.get()) {
+                        Log.w(TAG, "Hotspot connection failed - user declined or network unavailable")
+                        return false
+                    }
+                    delay(1000)
+                }
+                Log.w(TAG, "Hotspot connection timed out - user may need to approve the dialog")
+                return false
+            } else {
+                // Legacy WiFi connection for older Android versions
+                @Suppress("DEPRECATION")
+                val wifiConfig = android.net.wifi.WifiConfiguration().apply {
+                    SSID = "\"$ssid\""
+                    preSharedKey = "\"$password\""
+                }
+
+                @Suppress("DEPRECATION")
+                val netId = wifiManager.addNetwork(wifiConfig)
+                if (netId != -1) {
+                    @Suppress("DEPRECATION")
+                    wifiManager.enableNetwork(netId, true)
+                    Log.i(TAG, "Connecting to hotspot $ssid (legacy)")
+                    delay(5000) // Wait for connection
+                    return true
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to connect to hotspot: ${e.message}", e)
+        }
+        return false
+    }
+
+    /**
+     * Connect to a device
+     */
+    suspend fun connect(deviceId: String): Boolean {
+        val device = discovery?.devices?.value?.get(deviceId) ?: return false
+        return connectionManager?.connect(deviceId, device.address.hostAddress ?: "", device.tcpPort) ?: false
+    }
+
+    /**
+     * Disconnect from a device
+     */
+    fun disconnect(deviceId: String) {
+        connectionManager?.disconnect(deviceId)
+    }
+
+    /**
+     * Send a ping to a device
+     */
+    suspend fun ping(deviceId: String, message: String? = null) {
+        connectionManager?.sendMessage(deviceId, Ping(message))
+    }
+
+    /**
+     * Send clipboard content to a device
+     */
+    suspend fun sendClipboard(deviceId: String, content: String) {
+        val clipboard = Clipboard(
+            content = content,
+            timestamp = System.currentTimeMillis()
+        )
+        connectionManager?.sendMessage(deviceId, clipboard)
+    }
+
+    /**
+     * Send clipboard content to all connected devices
+     */
+    suspend fun broadcastClipboard(content: String) {
+        val devices = connectionManager?.getConnectedDevices() ?: emptyList()
+        Log.i(TAG, "Broadcasting clipboard to ${devices.size} devices: $devices")
+        devices.forEach { deviceId ->
+            Log.i(TAG, "Sending clipboard to $deviceId (${content.length} chars)")
+            sendClipboard(deviceId, content)
+        }
+    }
+
+    /**
+     * Share a URL with a device
+     */
+    suspend fun shareUrl(deviceId: String, url: String) {
+        connectionManager?.sendMessage(deviceId, ShareUrl(url))
+    }
+
+    /**
+     * Share text with a device
+     */
+    suspend fun shareText(deviceId: String, text: String) {
+        connectionManager?.sendMessage(deviceId, ShareText(text))
+    }
+
+    /**
+     * Find device (ring the desktop)
+     */
+    suspend fun findDevice(deviceId: String) {
+        connectionManager?.sendMessage(deviceId, FindDevice())
+    }
+
+    private fun handleDeviceDiscovered(device: DiscoveredDevice) {
+        val isPaired = pairedDevices.containsKey(device.deviceId)
+        val isConnected = connectionManager?.getConnectedDevices()?.contains(device.deviceId) ?: false
+
+        val updated = _devices.value.toMutableMap()
+        updated[device.deviceId] = CkpDeviceState(
+            deviceId = device.deviceId,
+            name = device.name,
+            deviceType = device.deviceType,
+            paired = isPaired,
+            connected = isConnected
+        )
+        _devices.value = updated
+
+        // Auto-connect to paired devices
+        if (isPaired && !isConnected) {
+            scope.launch {
+                connect(device.deviceId)
+            }
+        }
+    }
+
+    private suspend fun handleConnectionEvent(event: CkpConnectionEvent) {
+        when (event) {
+            is CkpConnectionEvent.Connected -> {
+                // Add device to map if it doesn't exist (for incoming connections)
+                if (!_devices.value.containsKey(event.deviceId)) {
+                    val updated = _devices.value.toMutableMap()
+                    updated[event.deviceId] = CkpDeviceState(
+                        deviceId = event.deviceId,
+                        name = event.deviceName,
+                        deviceType = DeviceType.DESKTOP, // Assume desktop for incoming connections
+                        paired = pairedDevices.containsKey(event.deviceId),
+                        connected = true
+                    )
+                    _devices.value = updated
+                } else {
+                    updateDeviceState(event.deviceId) { it.copy(connected = true) }
+                }
+                onDeviceConnected?.invoke(event.deviceId, event.deviceName)
+            }
+            is CkpConnectionEvent.Disconnected -> {
+                updateDeviceState(event.deviceId) { it.copy(connected = false) }
+                onDeviceDisconnected?.invoke(event.deviceId)
+            }
+            is CkpConnectionEvent.PingReceived -> {
+                onPingReceived?.invoke(event.deviceId, event.message)
+            }
+            is CkpConnectionEvent.ClipboardReceived -> {
+                // Notify callback if set, otherwise update clipboard directly
+                if (onClipboardReceived != null) {
+                    onClipboardReceived?.invoke(event.deviceId, event.content)
+                } else {
+                    withContext(Dispatchers.Main) {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Cosmic Konnect", event.content))
+                    }
+                }
+            }
+            is CkpConnectionEvent.NotificationReceived -> {
+                onNotificationReceived?.invoke(event.deviceId, event.notification)
+            }
+            is CkpConnectionEvent.FileOfferReceived -> {
+                onFileOfferReceived?.invoke(event.deviceId, event.offer.filename, event.offer.size)
+            }
+            is CkpConnectionEvent.FindDeviceReceived -> {
+                // Ring the phone
+                ringPhone()
+            }
+            is CkpConnectionEvent.UrlReceived -> {
+                // Open URL in browser
+                withContext(Dispatchers.Main) {
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(event.url))
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to open URL: ${e.message}")
+                    }
+                }
+            }
+            is CkpConnectionEvent.TextReceived -> {
+                // Copy to clipboard
+                withContext(Dispatchers.Main) {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Cosmic Konnect", event.text))
+                }
+            }
+            is CkpConnectionEvent.PairingRequested -> {
+                // Apple-style: always auto-accept pairing
+                Log.i(TAG, "Pairing requested from ${event.deviceName}, auto-accepting")
+                connectionManager?.acceptPairing(event.deviceId, event.publicKey)
+            }
+            is CkpConnectionEvent.PairingAccepted -> {
+                Log.i(TAG, "Pairing accepted from ${event.deviceId}")
+                // Save pairing key and update device state
+                savePairedDevice(event.deviceId, event.pairingKey)
+                updateDeviceState(event.deviceId) { it.copy(paired = true) }
+            }
+            is CkpConnectionEvent.PairingRejected -> {
+                Log.i(TAG, "Pairing rejected from ${event.deviceId}: ${event.reason}")
+            }
+        }
+    }
+
+    private fun updateDeviceState(deviceId: String, update: (CkpDeviceState) -> CkpDeviceState) {
+        val current = _devices.value[deviceId] ?: return
+        val updated = _devices.value.toMutableMap()
+        updated[deviceId] = update(current)
+        _devices.value = updated
+    }
+
+    private fun ringPhone() {
+        scope.launch(Dispatchers.Main) {
+            try {
+                // Play ringtone
+                val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                val ringtone = RingtoneManager.getRingtone(context, ringtoneUri)
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    ringtone.isLooping = false
+                    val audioAttributes = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                    ringtone.audioAttributes = audioAttributes
+                }
+
+                ringtone.play()
+
+                // Stop after 5 seconds
+                delay(5000)
+                ringtone.stop()
+
+                // Also vibrate
+                val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                    vibratorManager.defaultVibrator
+                } else {
+                    @Suppress("DEPRECATION")
+                    context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 500, 200, 500, 200, 500), -1))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(longArrayOf(0, 500, 200, 500, 200, 500), -1)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to ring phone: ${e.message}")
+            }
+        }
+    }
+
+    private fun loadPairedDevices() {
+        val prefs = context.getSharedPreferences("ckp_paired", Context.MODE_PRIVATE)
+        for ((key, value) in prefs.all) {
+            if (value is String) {
+                try {
+                    val keyBytes = android.util.Base64.decode(value, android.util.Base64.DEFAULT)
+                    pairedDevices[key] = keyBytes
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to load pairing key for $key")
+                }
+            }
+        }
+        Log.i(TAG, "Loaded ${pairedDevices.size} paired devices")
+    }
+
+    private fun savePairedDevice(deviceId: String, pairingKey: ByteArray) {
+        val prefs = context.getSharedPreferences("ckp_paired", Context.MODE_PRIVATE)
+        val encoded = android.util.Base64.encodeToString(pairingKey, android.util.Base64.DEFAULT)
+        prefs.edit().putString(deviceId, encoded).apply()
+        pairedDevices[deviceId] = pairingKey
+    }
+
+    private fun removePairedDevice(deviceId: String) {
+        val prefs = context.getSharedPreferences("ckp_paired", Context.MODE_PRIVATE)
+        prefs.edit().remove(deviceId).apply()
+        pairedDevices.remove(deviceId)
+    }
+}

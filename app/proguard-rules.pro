@@ -13,11 +13,11 @@
     kotlinx.serialization.KSerializer serializer(...);
 }
 
--keep,includedescriptorclasses class io.github.cosmickonnect.**$$serializer { *; }
--keepclassmembers class io.github.cosmickonnect.** {
+-keep,includedescriptorclasses class io.github.reality2_roycdavies.cosmickonnect.**$$serializer { *; }
+-keepclassmembers class io.github.reality2_roycdavies.cosmickonnect.** {
     *** Companion;
 }
--keepclasseswithmembers class io.github.cosmickonnect.** {
+-keepclasseswithmembers class io.github.reality2_roycdavies.cosmickonnect.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
 

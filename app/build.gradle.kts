@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "io.github.cosmickonnect"
+    namespace = "io.github.reality2_roycdavies.cosmickonnect"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "io.github.cosmickonnect"
+        applicationId = "io.github.reality2_roycdavies.cosmickonnect"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
